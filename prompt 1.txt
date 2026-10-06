@@ -1,0 +1,107 @@
+# AI Health Copilot: Shared Project Context (FROZEN)
+
+## Product
+Hackathon project (Altrix Labs challenge: AI-Powered Personal Health Copilot).
+Flow: user uploads a medical document (prescription / lab report / discharge summary)
+-> AI extracts structured data -> user VERIFIES extracted values -> plain-language
+summary with abnormal-value explanation -> unified health timeline.
+Bonus: Tamil support, ABDM/ABHA-ready (FHIR-style data + MOCK ABHA link).
+
+## Judging rubric (build priorities)
+AI Utilization 35% (extraction accuracy, summary quality, abnormal-value explanation)
+Technical Architecture 25% (clean pipeline, storage, structured model, ABDM/FHIR schema)
+User Experience 20% (easy upload, readable summaries, clear timeline)
+Healthcare Impact 10% (medical correctness, safe wording, disclaimers, no misleading claims)
+Presentation & Demo 10% (working prototype)
+
+## Absolute rules (all 3 people)
+1. Core flow first (upload -> extract -> verify -> summary -> timeline). Extras only after it works end to end.
+2. NEVER diagnose, prescribe, suggest treatment, or claim drug interactions. Safe wording + disclaimer always.
+3. Abnormal flags come from CODE (reference ranges), never from the LLM.
+4. Never fabricate data, accuracy numbers, test results, or integrations. Mock features must be labeled MOCK/DEMO.
+5. No real patient data. Synthetic samples only.
+6. Secrets only in .env (never committed, never in frontend code, never in logs).
+7. Do not edit folders owned by other people. Do not change the contract or API silently.
+8. Never claim something is tested unless it was actually run.
+
+## Repo structure and ownership
+health-copilot/
+  PROJECT_CONTEXT.md      (this file)
+  contract/               SHARED, frozen. record.schema.json, mock_lab.json, mock_prescription.json, mock_discharge.json
+  ai_engine/              PERSON 1
+  backend/                PERSON 2
+  frontend/               PERSON 3
+  samples/                PERSON 1 (synthetic docs + ground_truth/*.json)
+  docs/                   architecture diagram, demo script (Person 2 + 3)
+  .env.example  .gitignore (.env, *.db, uploads/, node_modules, __pycache__)
+Branches: ai, backend, frontend -> merge to main daily.
+Python 3.11 for P1 and P2. Frontend: React + Vite + Tailwind.
+
+## THE RECORD CONTRACT (field names never change; unknown = null or [])
+{
+  "record_id": "uuid-string",
+  "doc_type": "prescription | lab_report | discharge_summary",
+  "doc_date": "YYYY-MM-DD or null",
+  "language": "en | ta | mixed",
+  "patient_name_present": true,
+  "medicines": [{
+    "name_raw": "Dolo 650", "generic": "Paracetamol or null", "strength": "650 mg or null",
+    "schedule_raw": "1-0-1 or null",
+    "schedule_parsed": ["morning","afternoon","night"],   // subset of these 3 values
+    "food_instruction": "before_food | after_food | null",
+    "duration_days": 5, "confidence": 0.91,
+    "bbox": [x, y, w, h]   // normalized 0..1 relative to the page image, or null
+  }],
+  "tests": [{
+    "name": "HbA1c", "loinc": "4548-4 or null", "value": 7.2, "unit": "%",
+    "ref_low": 4.0, "ref_high": 5.6,
+    "flag": "LOW | NORMAL | HIGH | UNKNOWN",
+    "explanation_en": "short plain-language note or null",
+    "confidence": 0.88, "bbox": [x, y, w, h] or null
+  }],
+  "diagnoses": [{"text": "Type 2 Diabetes Mellitus", "confidence": 0.8}],
+  "summary_en": "string or null",
+  "summary_ta": "string or null",
+  "needs_review": ["tests[0]", "medicines[2]"],   // JSON-path style strings
+  "disclaimer": "fixed disclaimer text",
+  "error": null                                     // or {"code": "...", "message": "..."}
+}
+Fixed disclaimer text (all layers use exactly this):
+"This is AI-generated information to help you understand your records. It is not a diagnosis or medical advice. Please consult your doctor."
+
+## API CONTRACT (Backend implements, Frontend consumes). Base: http://localhost:8000/api
+POST   /profiles/{pid}/records        multipart "file" -> 200 {"record_id","status":"draft","record":<contract>}
+GET    /records/{id}                  -> {"record_id","status","record"}
+GET    /records/{id}/file             -> original image/pdf bytes
+PUT    /records/{id}                  body {"record":<contract>} -> status "confirmed"
+GET    /profiles/{pid}/timeline       -> {"items":[{"record_id","doc_type","doc_date","status","headline","medicines":[...],"tests":[...]}]} sorted by date desc
+GET    /profiles/{pid}/trends?test=HbA1c -> {"test","unit","points":[{"date","value","flag","record_id"}]}
+GET    /profiles/{pid}/alerts         -> {"alerts":[{"type":"duplicate_generic","generic","medicines":[...],"record_ids":[...],"message"}]}
+GET    /records/{id}/fhir             -> FHIR R4 Bundle JSON
+POST   /profiles/{pid}/abha/link      body {"abha_id"} -> {"mock":true,"status":"linked",...}   MOCK
+POST   /profiles/{pid}/abha/import    -> {"mock":true,"imported_record_ids":[...]}              MOCK
+DELETE /profiles/{pid}                -> {"deleted":true}
+POST   /profiles/{pid}/ask            body {"question"} -> {"answer","sources":[{"record_id","field"}],"grounded":true}  (stretch)
+GET    /health                        -> {"status":"ok"}
+Default profile id for demo: "default". Errors always: {"error":{"code":"...","message":"user-friendly"}}
+
+## AI engine <-> backend interface (Python import, no network)
+from ai_engine import extract_record
+extract_record(file_path: str, mime: str, lang_hint: str = "auto") -> dict   # returns contract dict, NEVER raises
+Backend adds repo root to sys.path. Backend env USE_MOCK_AI=true returns contract/mock_*.json by doc type.
+
+## Env vars (.env.example, no real values)
+LLM_PROVIDER=  LLM_API_KEY=  LLM_MODEL=       (model name from env, never hardcoded; check provider docs for current names)
+USE_MOCK_AI=true   DATABASE_URL=sqlite:///./health.db   UPLOAD_DIR=./uploads   MAX_UPLOAD_MB=10
+Frontend: VITE_USE_MOCK=true   VITE_API_URL=http://localhost:8000/api
+
+## Run
+backend:  cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload --port 8000
+frontend: cd frontend && npm install && npm run dev   (http://localhost:5173)
+ai cli:   python -m ai_engine.cli samples/<file>
+
+## Agent working protocol (applies to every person's agent)
+1. Read this file fully. 2. Inspect the repo. 3. Produce a written implementation plan
+(files, steps, risks, test plan) and STOP for human approval. 4. Build in priority order,
+smallest working slice first. 5. Test what you build; report only tests actually run.
+6. Run the HANDOFF CHECKLIST before declaring done. 7. Keep README section for your module.
